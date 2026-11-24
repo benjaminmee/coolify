@@ -92,6 +92,20 @@ class ScannerCommands
 
     private const SCANNER_USER = '65534:65534';
 
+    /**
+     * CA bundles of the common distributions. A private CA installed on the server (`update-ca-certificates`) lands in
+     * one of them; the scanner images bring only the public roots.
+     */
+    private const HOST_CA_BUNDLE_PATHS = [
+        '/etc/ssl/certs/ca-certificates.crt',
+        '/etc/pki/tls/certs/ca-bundle.crt',
+        '/etc/ssl/ca-bundle.pem',
+        '/etc/pki/tls/cacert.pem',
+    ];
+
+    /** Go reads every file in `SSL_CERT_DIR` in addition to the bundle of the image, so an empty directory changes nothing. */
+    private const SCANNER_CA_DIR = '/etc/coolify-ca';
+
     /** Lowest time limit of `docker save` of a local image, see saveTimeout(). */
     private const TIMEOUT_SAVE = 600;
 
@@ -671,6 +685,10 @@ class ScannerCommands
             'XDG_CACHE_HOME' => '/scratch/cache',
         ], $env);
         $mounts = ['type=bind,src='.$this->workDir().'/scratch,dst=/scratch', ...$mounts];
+        if ($network) {
+            $env['SSL_CERT_DIR'] = self::SCANNER_CA_DIR;
+            $mounts[] = 'type=bind,src='.$this->workDir().'/ca,dst='.self::SCANNER_CA_DIR.',readonly';
+        }
 
         $parts = [
             "timeout -k 10 {$timeout} docker run",
@@ -808,6 +826,7 @@ class ScannerCommands
     private function ownWorkDir(bool $hasAuth = false): array
     {
         $commands = [
+            $this->hostCaBundleCopy(),
             'chown -R '.self::SCANNER_USER.' '.escapeshellarg($this->workDir()),
             'chmod 700 '.escapeshellarg($this->workDir()),
         ];
@@ -816,6 +835,18 @@ class ScannerCommands
         }
 
         return $commands;
+    }
+
+    /**
+     * Copies the first CA bundle of the server into `ca/`, which runs with network access mount as `SSL_CERT_DIR`.
+     * The directory always exists, because `--mount` fails on a missing source; without a bundle it stays empty.
+     */
+    private function hostCaBundleCopy(): string
+    {
+        $dir = escapeshellarg($this->workDir().'/ca');
+        $paths = implode(' ', array_map('escapeshellarg', self::HOST_CA_BUNDLE_PATHS));
+
+        return $this->shell("mkdir -p -m 0700 {$dir} && for f in {$paths}; do if [ -f \"\$f\" ]; then cp \"\$f\" {$dir}/host-ca.crt; break; fi; done; true");
     }
 
     /**

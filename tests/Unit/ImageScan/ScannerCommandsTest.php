@@ -171,6 +171,38 @@ it('cuts the network only for runs that do not need a registry or the database d
     }
 });
 
+it('trusts the CA bundle of the server in runs that reach a registry or the database download', function () {
+    $lists = scannerCommandLists($this->commands);
+    $mount = "--mount 'type=bind,src=/data/coolify/image-scans/tmp-".SCANNER_TEST_RUN_ID."/ca,dst=/etc/coolify-ca,readonly'";
+
+    foreach (['dbUpdate', 'sbomFromRegistry', 'sbomFromRegistry with auth', 'tags', 'tags with auth', 'digest', 'digest with platform and auth'] as $name) {
+        expect(scannerDockerRuns($lists[$name]))->not->toBeEmpty()
+            ->each->toContain("-e 'SSL_CERT_DIR=/etc/coolify-ca' ")->toContain($mount);
+    }
+    foreach (['dbStatus', 'sbomFromLocal', 'sbomFromHost', 'grype', 'packages'] as $name) {
+        expect(scannerDockerRuns($lists[$name]))->each->not->toContain('SSL_CERT_DIR')->not->toContain('/etc/coolify-ca');
+    }
+});
+
+it('copies the first CA bundle of the server into the work directory before a container uses it', function () {
+    $dir = "'/data/coolify/image-scans/tmp-".SCANNER_TEST_RUN_ID."/ca'";
+
+    foreach (scannerCommandLists($this->commands) as $name => $commands) {
+        $run = collect($commands)->search(fn (string $line) => str_contains($line, 'docker run') && str_contains($line, 'SSL_CERT_DIR'));
+        if ($run === false) {
+            continue;
+        }
+        $copy = collect($commands)->search(fn (string $line) => str_contains($line, 'host-ca.crt'));
+        $chown = collect($commands)->search(fn (string $line) => str_starts_with($line, 'chown -R '));
+
+        expect($copy)->toBeInt($name)->toBeLessThan($chown, $name)->toBeLessThan($run, $name)
+            ->and(scannerUnwrapped([$commands[$copy]])[0])
+            ->toStartWith("mkdir -p -m 0700 {$dir} && for f in '/etc/ssl/certs/ca-certificates.crt' '/etc/pki/tls/certs/ca-bundle.crt' ")
+            ->toContain("cp \"\$f\" {$dir}/host-ca.crt; break;")
+            ->toEndWith('done; true');
+    }
+});
+
 it('gives the work directory to the scanner user before a container uses it', function () {
     $chown = "chown -R 65534:65534 '/data/coolify/image-scans/tmp-".SCANNER_TEST_RUN_ID."'";
 
